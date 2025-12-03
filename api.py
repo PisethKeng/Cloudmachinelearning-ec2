@@ -3,9 +3,9 @@ from pydantic import BaseModel
 import pickle
 import pandas as pd
 import boto3
+import os
 from datetime import datetime
 import uuid
-import json
 
 # Load model
 with open("diabetes_best_model.pkl", "rb") as f:
@@ -13,6 +13,7 @@ with open("diabetes_best_model.pkl", "rb") as f:
 
 app = FastAPI()
 
+# ----- Request Body Schema -----
 class Patient(BaseModel):
     gender: str
     age: float
@@ -23,12 +24,16 @@ class Patient(BaseModel):
     HbA1c_level: float
     blood_glucose_level: float
 
-# --- S3 setup ---
-S3_BUCKET = "your-bucket-name-here"
-
-s3_client = boto3.client("s3", region_name="us-east-1")
+# ----- Optional: S3 Logging -----
+S3_BUCKET = os.environ.get("DIABETES_BUCKET_NAME")
+s3_client = None
+if S3_BUCKET:
+    s3_client = boto3.client("s3")
 
 def log_to_s3(input_data, prediction):
+    if not s3_client or not S3_BUCKET:
+        return
+
     record = {
         "timestamp": datetime.utcnow().isoformat(),
         "input": input_data,
@@ -37,13 +42,15 @@ def log_to_s3(input_data, prediction):
 
     key = f"predictions/{datetime.utcnow().date()}/{uuid.uuid4()}.json"
 
+    import json
     s3_client.put_object(
         Bucket=S3_BUCKET,
         Key=key,
         Body=json.dumps(record),
-        ContentType="application/json",
+        ContentType="application/json"
     )
 
+# ----- Prediction Endpoint -----
 @app.post("/predict")
 def predict(patient: Patient):
 
@@ -54,7 +61,11 @@ def predict(patient: Patient):
 
     label = "Diabetic" if pred == 1 else "Non-diabetic"
 
-    result = {"prediction": int(pred), "label": label, "diabetes_probability": prob}
+    result = {
+        "prediction": int(pred),
+        "label": label,
+        "diabetes_probability": prob
+    }
 
     log_to_s3(patient.dict(), result)
 
